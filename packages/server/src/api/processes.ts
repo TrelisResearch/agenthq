@@ -92,8 +92,8 @@ export async function registerProcessRoutes(app: FastifyInstance): Promise<void>
         agent,
         args: [],
         task,
-        cols,
-        rows,
+        cols: cols as number,
+        rows: rows as number,
         yoloMode: yoloMode || false,
       });
 

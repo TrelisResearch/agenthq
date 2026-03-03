@@ -167,8 +167,8 @@ export async function registerWorktreeRoutes(app: FastifyInstance): Promise<void
       agent: 'shell',
       args: [],
       task: 'git diff main --stat && echo "---" && git diff main',
-      cols,
-      rows,
+      cols: cols as number,
+      rows: rows as number,
       yoloMode: false,
     });
 
@@ -251,8 +251,8 @@ fi
       agent: 'shell',
       args: [],
       task: mergeScript,
-      cols,
-      rows,
+      cols: cols as number,
+      rows: rows as number,
       yoloMode: false,
     });
 
@@ -320,8 +320,8 @@ You are currently in the main worktree at: ${mainWorktree.path}`;
       agent,
       args: [],
       task: mergePrompt,
-      cols,
-      rows,
+      cols: cols as number,
+      rows: rows as number,
       yoloMode: true, // Allow agent to make changes
     });
 
