@@ -10,9 +10,12 @@ Browser-based control plane for managing coding agents (Claude Code, Codex CLI, 
 
 ### Prerequisites
 
-- Node.js 20+
+- Node.js 22+ (with `--experimental-sqlite` support — see note below)
 - pnpm 9+
 - Go 1.23+
+- At least one agent CLI installed (e.g. `claude`, `codex`, `cursor-agent`)
+
+> **Node.js `node:sqlite` note:** The server uses the built-in `node:sqlite` module. On Node.js 22–23 you must pass `--experimental-sqlite` via the `NODE_OPTIONS` env var (see below). Node.js 24+ includes it without a flag.
 
 ### Setup
 
@@ -20,58 +23,75 @@ Browser-based control plane for managing coding agents (Claude Code, Codex CLI, 
 # Install dependencies
 pnpm install
 
-# Build shared package
-pnpm --filter @agenthq/shared build
+# Build all packages (shared, server, web)
+pnpm build
 
 # Build daemon
-cd daemon && make build && cd ..
+cd daemon && go build -o agenthq-daemon ./cmd/agenthq-daemon && cd ..
 ```
 
-### Development (Recommended)
+### Running Locally
 
-Use the Makefile for managing all services:
+You need three things running: the **server**, the **web UI**, and the **daemon**.
+
+#### 1. Configure a daemon auth token
+
+The daemon authenticates to the server with a shared token. Create the config file in your workspace:
 
 ```bash
-# Create test workspace
-mkdir -p /tmp/agenthq-test
-cd /tmp/agenthq-test
-git init --initial-branch=main my-project
-cd my-project && echo "# Test" > README.md && git add . && git commit -m "init"
-cd ../..
+WORKSPACE=~/my-repos   # directory containing your git repos
 
-# Start all services
-make start WORKSPACE=/tmp/agenthq-test
-
-# Check status
-make status
-
-# View logs
-make tail-logs
-
-# Restart individual services
-make restart-daemon  # Rebuilds Go binary and restarts
-make restart-server  # Restarts Node server
-make restart-web     # Restarts Vite dev server
-
-# Stop everything
-make stop
+mkdir -p "$WORKSPACE/.agenthq-meta"
+echo '{"daemonAuthToken":"my-secret-token"}' > "$WORKSPACE/.agenthq-meta/config.json"
 ```
 
-Open http://localhost:5173 in your browser.
+Or pass it as an env var to the server: `AGENTHQ_DAEMON_AUTH_TOKEN=my-secret-token`.
 
-### Manual Development
-
-If you prefer manual control:
+#### 2. Start the server
 
 ```bash
-# Terminal 1: Start server
-AGENTHQ_WORKSPACE=/tmp/agenthq-test pnpm --filter @agenthq/server dev
+NODE_OPTIONS="--experimental-sqlite" \
+AGENTHQ_WORKSPACE=~/my-repos \
+AGENTHQ_DEFAULT_USERNAME=admin \
+AGENTHQ_DEFAULT_PASSWORD=changeme \
+pnpm --filter @agenthq/server dev
+```
 
-# Terminal 2: Start web client
+#### 3. Start the web UI
+
+```bash
 pnpm --filter @agenthq/web dev
+```
 
-# Terminal 3: Start daemon
-AGENTHQ_SERVER_URL=ws://localhost:3000/ws/daemon ./daemon/agenthq-daemon
+#### 4. Start the daemon
+
+```bash
+AGENTHQ_AUTH_TOKEN=my-secret-token \
+./daemon/agenthq-daemon --workspace ~/my-repos
+```
+
+The `--workspace` flag tells the daemon where to scan for git repositories. Each top-level directory containing a `.git` folder will appear as a repo in the UI.
+
+> **Launching from inside Claude Code?** The daemon inherits `CLAUDECODE` and `CLAUDE_CODE_ENTRYPOINT` env vars, which prevent nested Claude Code sessions. Strip them:
+> ```bash
+> env -u CLAUDECODE -u CLAUDE_CODE_ENTRYPOINT \
+>   AGENTHQ_AUTH_TOKEN=my-secret-token \
+>   ./daemon/agenthq-daemon --workspace ~/my-repos
+> ```
+
+#### 5. Open the UI
+
+Go to http://localhost:5173, log in with the credentials you set, select a repo, create a worktree, and spawn an agent.
+
+### Using the Makefile (Linux)
+
+The root Makefile provides convenience commands but uses Linux-specific tools (`ss`, `fuser`) and won't work on macOS without modification.
+
+```bash
+make start WORKSPACE=~/my-repos
+make status
+make tail-logs
+make stop
 ```
 
 ## Architecture
@@ -113,23 +133,29 @@ agenthq/
 
 ### Server
 
-| Variable | Required | Description |
-|----------|----------|-------------|
-| `AGENTHQ_WORKSPACE` | Yes | Path to workspace folder containing repos |
-| `AGENTHQ_PORT` | No | Server port (default: 3000) |
+| Variable | Required | Default | Description |
+|----------|----------|---------|-------------|
+| `AGENTHQ_WORKSPACE` | Yes | — | Path to directory containing your git repos |
+| `AGENTHQ_PORT` | No | `3000` | Server port |
+| `AGENTHQ_DAEMON_AUTH_TOKEN` | No | — | Shared secret for daemon auth (alternative to config file) |
+| `AGENTHQ_DEFAULT_USERNAME` | No | — | Seed a default login user on startup |
+| `AGENTHQ_DEFAULT_PASSWORD` | No | — | Password for the default user |
+| `NODE_OPTIONS` | No | — | Set to `--experimental-sqlite` on Node.js 22–23 |
 
 ### Daemon
 
-| Variable | Required | Description |
-|----------|----------|-------------|
-| `AGENTHQ_SERVER_URL` | Yes | WebSocket URL to connect to |
-| `AGENTHQ_ENV_ID` | No | Environment ID (auto-generated if not set) |
-| `AGENTHQ_AUTH_TOKEN` | No | Auth token for remote connections |
+| Variable | Required | Default | Description |
+|----------|----------|---------|-------------|
+| `AGENTHQ_AUTH_TOKEN` | Yes* | — | Shared secret matching the server's daemon auth token |
+| `AGENTHQ_SERVER_URL` | No | `ws://localhost:3000/ws/daemon` | WebSocket URL to connect to |
+| `AGENTHQ_ENV_ID` | No | auto-generated | Environment ID |
 
-The daemon also accepts a `--workspace` flag for remote deployments:
+\* Required when the server has a daemon auth token configured (which it should).
+
+The daemon also accepts a `--workspace` flag:
 
 ```bash
-./agenthq-daemon --workspace /path/to/workspace
+./agenthq-daemon --workspace /path/to/repos
 ```
 
 ## Supported Agents
@@ -142,6 +168,17 @@ The daemon also accepts a `--workspace` flag for remote deployments:
 | Kimi CLI | `kimi` | Moonshot coding agent |
 | Droid CLI | `droid` | Factory AI coding agent |
 | Terminal | `bash` | Plain shell |
+
+## Troubleshooting
+
+| Problem | Solution |
+|---------|----------|
+| `ERR_UNKNOWN_BUILTIN_MODULE: node:sqlite` | Set `NODE_OPTIONS="--experimental-sqlite"` or upgrade to Node.js 24+ |
+| `Daemon connection rejected: no daemon auth token configured` | Set `AGENTHQ_DAEMON_AUTH_TOKEN` env var on server, or create `.agenthq-meta/config.json` in workspace |
+| `Invalid auth token` | Ensure `AGENTHQ_AUTH_TOKEN` (daemon) matches `AGENTHQ_DAEMON_AUTH_TOKEN` (server) |
+| `Claude Code cannot be launched inside another Claude Code session` | Launch daemon with `env -u CLAUDECODE -u CLAUDE_CODE_ENTRYPOINT` |
+| `No workspace configured, returning empty repos list` | Pass `--workspace /path/to/repos` when starting the daemon |
+| Makefile commands fail on macOS | Use the manual commands instead — the Makefile uses Linux-specific tools (`ss`, `fuser`) |
 
 ## License
 
